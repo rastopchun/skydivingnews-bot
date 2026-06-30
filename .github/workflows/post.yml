@@ -1,0 +1,35 @@
+name: post
+on:
+  schedule:
+    - cron: '0 * * * *'
+  workflow_dispatch: {}
+permissions:
+  contents: write
+concurrency:
+  group: post
+  cancel-in-progress: false
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt
+      - name: Post one news
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+          OPENAI_MODEL: gpt-4o
+          FOOTER: '🪂 <b>Министерство парашютных дел</b>'
+        run: python bot.py
+      - name: Save state
+        if: always()
+        run: |
+          git config user.name "skydivingnews-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git add posted.json recent_angles.json recent_persons.json recent_details.json 2>/dev/null || true
+          git commit -m "state update [skip ci]" || echo "nothing to commit"
+          git push || echo "nothing to push"

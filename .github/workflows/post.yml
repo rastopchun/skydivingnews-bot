@@ -30,6 +30,6 @@ jobs:
         run: |
           git config user.name "skydivingnews-bot"
           git config user.email "bot@users.noreply.github.com"
-          git add posted.json recent_angles.json recent_persons.json recent_details.json 2>/dev/null || true
+          git add posted.json recent_angles.json recent_persons.json recent_details.json recent_sources.json 2>/dev/null || true
           git commit -m "state update [skip ci]" || echo "nothing to commit"
           git push || echo "nothing to push"

@@ -50,6 +50,25 @@ PERSONS_COOLDOWN = 15
 DETAILS_STATE = BASE_DIR / "recent_details.json"
 DETAILS_COOLDOWN = 20
 
+# Реальные новостные RSS-ленты — из них берём свежий заголовок как отправную точку.
+NEWS_FEEDS = [
+    "https://lenta.ru/rss/news",
+    "https://tass.ru/rss/v2.xml",
+    "https://ria.ru/export/rss2/archive/index.xml",
+    "https://www.kommersant.ru/RSS/news.xml",
+    "https://news.google.com/rss?hl=ru&gl=RU&ceid=RU:ru",
+]
+SOURCE_STATE = BASE_DIR / "recent_sources.json"
+SOURCE_COOLDOWN = 80        # не берём один и тот же реальный заголовок повторно
+
+# Трагичные/чувствительные темы — такие заголовки пропускаем (не шутим над ними).
+# Пропускаем ТОЛЬКО военно-политическое — это юридический риск для владельца
+# канала в РФ (не вопрос вкуса). Всё остальное мрачное — разрешено.
+SENSITIVE_WORDS = [
+    r"войн", r"\bвсу\b", r"\bсво\b", r"фронт", r"мобилиз", r"украин", r"зеленск",
+    r"донбас", r"\bднр\b", r"\bлнр\b", r"ядер", r"обстрел", r"теракт",
+]
+
 BODY_MAX_CHARS = 320
 HEADLINE_MAX_CHARS = 80
 MAX_GENERATION_ATTEMPTS = 8
@@ -225,20 +244,17 @@ PERSONS = [
 
 SYSTEM_PROMPT = """Ты пишешь короткие выдуманные новости для сатирического канала про парашютный мир.
 
-Главное: это НЕ сатирическая новость про политику, бренды, интернет или шоу-бизнес. Это маленькая абсурдная новость из парашютного мира. Внешний мир может попасть в текст только как приправа.
+КАК РОЖДАЕТСЯ НОВОСТЬ:
+Тебе дают РЕАЛЬНЫЙ свежий новостной заголовок. Возьми из него тему, сферу, героев, бренды или страну — и сочини на этой основе ВЫДУМАННУЮ абсурдную новость, в которую в самый центр вплетён парашютный мир (прыжки, дропзона, вингсьют, снаряжение, инструктор, борт). Реальный заголовок — это источник актуальности и настоящих имён; сам сюжет делай нелепым и парашютным. Каждый заголовок — своя тема, поэтому повторов не будет.
 
 СТИЛЬ:
-- Абсурдно, но не бессвязно.
-- Один конкретный нелепый случай, который можно пересказать одним предложением.
-- Сухой, невозмутимый, почти официальный тон.
-- Юмор рождается из серьёзной подачи бытовой глупости.
-- Бытовая деталь важнее большого инфоповода.
-- Парашютная тема в центре: ДЗ, сборы, инструктор, борт, укладочная, формация, отцепка, стропы, медуза, тандем, заход.
-
-ФОРМУЛА НОВОСТИ:
-[бытовая причина] → [парашютное последствие] → [сухой официальный вывод или короткая цитата]
-
-Сначала придумай бытовую нелепость на ДЗ. Потом привяжи её к одному реальному парашютному последствию. Только потом, если нужно, добавь известного человека, бренд или ведомство.
+- Абсурдно, но не бессвязно. Один конкретный нелепый случай.
+- Сухой, невозмутимый, почти официальный тон новостной заметки.
+- Юмор — из серьёзной подачи полного бреда.
+- Парашютная тема ОБЯЗАТЕЛЬНО в центре сюжета, а не приклеена в конце.
+- Реальные имена/бренды/места — только настоящие (из заголовка или общеизвестные). Ничего не выдумывай.
+- Максимум один известный человек на новость. Финал каждый раз разный.
+- Мрачные и тёмные темы — можно, чёрный юмор приветствуется: обыгрывай их в абсурдном парашютном ключе. Единственное — не издевайся адресно над конкретными реальными пострадавшими по имени; уводи сюжет в вымышленный абсурд.
 
 ЭТАЛОННЫЕ ПРИМЕРЫ:
 
@@ -413,9 +429,6 @@ def quality_reject(headline: str, body: str) -> str | None:
     if not has_any_fragment(text, SKY_ANCHORS):
         return "нет настоящего парашютного якоря"
 
-    if not has_any_fragment(text, DOMESTIC_ANCHORS):
-        return "нет бытовой нелепой детали"
-
     if count_fragments(text, SKY_TERMS) > 4:
         return "перегруз парашютными терминами"
 
@@ -455,11 +468,52 @@ def parse_news(raw: str) -> dict:
     return {"headline": headline, "body": body}
 
 
+def fetch_source_headlines(url: str) -> list:
+    """Скачивает RSS-ленту и вытаскивает заголовки новостей (item titles)."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "skydive-news-bot/2.0"})
+        with urllib.request.urlopen(req, timeout=20) as r:
+            xml = r.read().decode("utf-8", "replace")
+    except Exception:
+        return []
+    raw = re.findall(r"<title>\s*(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?\s*</title>", xml, re.S)
+    out = []
+    for t in raw:
+        t = re.sub(r"<[^>]+>", " ", t)
+        for a, b in [("&amp;", "&"), ("&quot;", '"'), ("&#39;", "'"), ("&apos;", "'"),
+                     ("&laquo;", "«"), ("&raquo;", "»"), ("&mdash;", "—"), ("&nbsp;", " ")]:
+            t = t.replace(a, b)
+        t = " ".join(t.split()).strip()
+        if t:
+            out.append(t)
+    # первый <title> обычно — название самой ленты, отбрасываем
+    return out[1:] if len(out) > 1 else out
+
+
+def pick_source_headline() -> str | None:
+    """Берёт свежий, не трагичный и не повторявшийся реальный заголовок."""
+    recent = read_json_list(SOURCE_STATE)
+    feeds = list(NEWS_FEEDS)
+    random.shuffle(feeds)
+    for url in feeds:
+        titles = fetch_source_headlines(url)
+        pool = [
+            t for t in titles
+            if 15 <= len(t) <= 120
+            and not has_any_pattern(t, SENSITIVE_WORDS)
+            and t not in recent
+        ]
+        if pool:
+            choice = random.choice(pool[:40])
+            recent.append(choice)
+            write_json(SOURCE_STATE, recent[-SOURCE_COOLDOWN:])
+            return choice
+    return None
+
+
 def generate_news(client: OpenAI) -> dict:
-    angle = pick_angle()
-    detail = pick_detail()
+    source = pick_source_headline()
     place = random.choice(DROPZONES)
-    consequence = random.choice(CONSEQUENCES)
     tone = random.choice(TONES)
 
     avoid = recent_headlines()
@@ -476,15 +530,20 @@ def generate_news(client: OpenAI) -> dict:
             + ", ".join(dict.fromkeys(recent_persons))
         )
 
-    user_prompt = f"""Вводные для одной новости:
-- Ситуация: {angle}
-- Дропзона или место: {place}
-- Бытовая деталь: {detail}
-- Последствие: {consequence}
-- Тон: {tone}
+    if source:
+        seed = (
+            f"РЕАЛЬНЫЙ свежий новостной заголовок (отталкивайся от его темы, "
+            f"героев, сферы): «{source}»"
+        )
+    else:
+        seed = "Реальный заголовок недоступен — придумай свежую бытовую ситуацию на дропзоне."
 
-Используй вводные свободно, но сохрани механику: бытовая нелепость → парашютное последствие → сухой вывод или короткая цитата.
-Не делай обзор темы. Не делай новость про интернет. Нужен один конкретный случай.{avoid_block}{persons_block}
+    user_prompt = f"""Задание — одна новость.
+{seed}
+Дропзона для антуража (если уместно): {place}
+Тон: {tone}
+
+Сочини выдуманную абсурдную парашютную новость, отталкиваясь от темы заголовка: возьми оттуда реальную сферу/героев/бренды и вплети парашютный мир в САМЫЙ ЦЕНТР сюжета. Один конкретный случай, сухо, без штампов. Реальные названия и людей бери только настоящих (из заголовка или общеизвестных), ничего не выдумывай.{avoid_block}{persons_block}
 """
 
     resp = client.chat.completions.create(
@@ -512,8 +571,7 @@ def generate_news(client: OpenAI) -> dict:
     persons = detect_persons(news["headline"] + " " + news["body"])
     save_recent_persons(persons)
 
-    news["angle"] = angle
-    news["detail"] = detail
+    news["source"] = source
     news["place"] = place
     return news
 
@@ -585,7 +643,7 @@ def main():
             log(f"🧠 Генерация новости (попытка {attempt}/{MAX_GENERATION_ATTEMPTS})...")
             news = generate_news(client)
             log("📰 Заголовок:", news["headline"])
-            log("🧩 Вводные:", news.get("place"), "|", news.get("detail"), "|", news.get("angle"))
+            log("🧩 Источник:", news.get("source") or "(нет, fallback)")
             break
         except Exception as e:
             log(f"⚠️ Ошибка генерации: {e!r}")

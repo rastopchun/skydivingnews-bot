@@ -532,9 +532,14 @@ def format_message(news: dict) -> str:
     return "\n".join(parts)
 
 
-def tg_send_message(text: str) -> dict:
+def parse_channels(raw: str) -> list:
+    """CHANNEL_ID может быть списком через запятую: '@one, @two' → ['@one','@two']."""
+    return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def tg_send_message(text: str, chat_id: str) -> dict:
     payload = json.dumps({
-        "chat_id": CHANNEL_ID,
+        "chat_id": chat_id,
         "text": text,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
@@ -599,14 +604,22 @@ def main():
         print("=" * 48)
         sys.exit(0)
 
-    log("📤 Публикую в канал...")
-    res = tg_send_message(text)
-    if res.get("ok"):
+    channels = parse_channels(CHANNEL_ID)
+    log(f"📤 Публикую в каналы ({len(channels)}): {', '.join(channels)}")
+    ok_any = False
+    for ch in channels:
+        res = tg_send_message(text, ch)
+        if res.get("ok"):
+            ok_any = True
+            log(f"✅ Опубликовано в {ch}")
+        else:
+            log(f"❌ {ch} — Telegram отказал:", res.get("description") or res)
+
+    if ok_any:
         save_history(news["headline"])
-        log("✅ Опубликовано.")
         sys.exit(0)
 
-    log("❌ Telegram отказал:", res.get("description") or res)
+    log("❌ Не удалось опубликовать ни в один канал")
     sys.exit(1)
 
 
